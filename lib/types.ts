@@ -47,6 +47,8 @@ export interface DownloadRequest {
   quality: string;
   audioFormat: AudioFormat;
   threads: number;
+  outputDirectory: string;
+  outputName?: string;
   metadata?: MetadataResponse;
 }
 
@@ -69,6 +71,8 @@ export interface DownloadJob {
   mode: DownloadMode;
   audioFormat: AudioFormat;
   threads: number;
+  outputDirectory: string;
+  outputName: string;
   progress: JobProgress;
   filePath: string | null;
   error: string | null;

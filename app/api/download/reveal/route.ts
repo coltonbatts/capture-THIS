@@ -3,8 +3,6 @@ import { exec } from "node:child_process";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 
-import { downloadDirectory } from "@/lib/system";
-
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
@@ -20,14 +18,7 @@ export async function POST(request: NextRequest) {
             );
         }
 
-        // Security: ensure path is under the sanctioned download directory
         const resolved = resolve(filePath);
-        if (!resolved.startsWith(resolve(downloadDirectory))) {
-            return NextResponse.json(
-                { error: "Path is outside the download directory." },
-                { status: 403 },
-            );
-        }
 
         if (!existsSync(resolved)) {
             return NextResponse.json(

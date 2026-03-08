@@ -4,33 +4,23 @@ import { AnimatePresence, motion } from "framer-motion";
 import {
   AlertCircle,
   ArrowDownToLine,
-  AudioLines,
-  Clock3,
+  Ban,
+  CheckCircle2,
   CopyPlus,
   FileVideo2,
-  FolderDown,
   FolderOpen,
-  HardDriveDownload,
   Layers3,
   LoaderCircle,
   RadioTower,
-  RefreshCw,
-  ScanSearch,
-  Sparkles,
-  CheckCircle2,
-  Settings2,
-  ChevronDown,
   XCircle,
-  Ban,
 } from "lucide-react";
 import Image from "next/image";
 import { useDeferredValue, useEffect, useState, useTransition } from "react";
 
+import { DEFAULT_DOWNLOAD_QUALITY } from "@/lib/download-preset";
 import type {
-  AudioFormat,
   DownloadJob,
   DownloadSnapshot,
-  DownloadMode,
   MetadataResponse,
   SystemStatus,
 } from "@/lib/types";
@@ -38,28 +28,18 @@ import { isLikelyUrl } from "@/lib/url";
 
 import styles from "./downloader-shell.module.css";
 
-const FORMAT_OPTIONS: Array<{
-  value: DownloadMode;
-  label: string;
-  description: string;
-}> = [
-    { value: "video-audio", label: "Video + Audio", description: "Standard" },
-    { value: "video-only", label: "Video Only", description: "Raw Picture" },
-    { value: "audio", label: "Audio Only", description: "Extraction" },
-  ];
-
-const AUDIO_OPTIONS: Array<{ value: AudioFormat; label: string }> = [
-  { value: "mp3", label: "MP3" },
-  { value: "flac", label: "FLAC" },
-];
-
 function humanStatus(status: DownloadJob["status"]) {
   switch (status) {
-    case "queued": return "Queued";
-    case "downloading": return "Downloading";
-    case "completed": return "Complete";
-    case "failed": return "Failed";
-    case "cancelled": return "Cancelled";
+    case "queued":
+      return "Queued";
+    case "downloading":
+      return "Downloading";
+    case "completed":
+      return "Complete";
+    case "failed":
+      return "Failed";
+    case "cancelled":
+      return "Cancelled";
   }
 }
 
@@ -75,29 +55,49 @@ function formatBytes(value: number | null) {
   return `${current.toFixed(current >= 100 ? 0 : 1)} ${units[unitIndex]}`;
 }
 
+function formatTimestamp(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Unknown";
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(date);
+}
+
+function toneClass(status: DownloadJob["status"]) {
+  switch (status) {
+    case "downloading":
+      return "toneLive";
+    case "failed":
+    case "cancelled":
+      return "toneDanger";
+    default:
+      return "toneNeutral";
+  }
+}
+
 export function DownloaderShell() {
   const [url, setUrl] = useState("");
   const deferredUrl = useDeferredValue(url);
-  const [mode, setMode] = useState<DownloadMode>("video-audio");
-  const [quality, setQuality] = useState("2160");
-  const [audioFormat, setAudioFormat] = useState<AudioFormat>("mp3");
-  const [threads, setThreads] = useState(8);
+  const [outputDirectory, setOutputDirectory] = useState("");
+  const [outputName, setOutputName] = useState("");
+  const [hasEditedOutputDirectory, setHasEditedOutputDirectory] = useState(false);
+  const [hasEditedOutputName, setHasEditedOutputName] = useState(false);
   const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null);
   const [metadata, setMetadata] = useState<MetadataResponse | null>(null);
   const [metadataError, setMetadataError] = useState<string | null>(null);
   const [queueError, setQueueError] = useState<string | null>(null);
-  const [isUpdating, setIsUpdating] = useState(false);
   const [isCancelling, setIsCancelling] = useState(false);
+  const [isQueueing, setIsQueueing] = useState(false);
   const [snapshot, setSnapshot] = useState<DownloadSnapshot>({
     jobs: [],
     activeJobId: null,
   });
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [isMetadataPending, startMetadataTransition] = useTransition();
-  const [, startQueueTransition] = useTransition();
-
-  // Toggle for advanced settings visibility
-  const [showSettings, setShowSettings] = useState(false);
+  const [, startSnapshotTransition] = useTransition();
 
   useEffect(() => {
     let mounted = true;
@@ -106,16 +106,27 @@ export function DownloaderShell() {
         if (!response.ok) throw new Error("Unable to inspect system binaries.");
         return (await response.json()) as SystemStatus;
       })
-      .then((result) => { if (mounted) setSystemStatus(result); })
-      .catch((error: Error) => { if (mounted) setQueueError(error.message); });
-    return () => { mounted = false; };
-  }, []);
+      .then((result) => {
+        if (!mounted) return;
+        setSystemStatus(result);
+        setOutputDirectory((current) => {
+          if (hasEditedOutputDirectory && current.trim()) return current;
+          return result.downloadDirectory;
+        });
+      })
+      .catch((error: Error) => {
+        if (mounted) setQueueError(error.message);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [hasEditedOutputDirectory]);
 
   useEffect(() => {
     const source = new EventSource("/api/download");
     const updateSnapshot = (event: MessageEvent<string>) => {
       const payload = JSON.parse(event.data) as { snapshot: DownloadSnapshot };
-      startQueueTransition(() => {
+      startSnapshotTransition(() => {
         setSnapshot(payload.snapshot);
       });
     };
@@ -127,8 +138,10 @@ export function DownloaderShell() {
       setQueueError("Live queue channel disconnected. Refresh to reattach.");
       source.close();
     };
-    return () => { source.close(); };
-  }, [startQueueTransition]);
+    return () => {
+      source.close();
+    };
+  }, [startSnapshotTransition]);
 
   useEffect(() => {
     const candidate = deferredUrl.trim();
@@ -139,6 +152,7 @@ export function DownloaderShell() {
       });
       return;
     }
+
     const timeout = window.setTimeout(() => {
       fetch("/api/metadata", {
         method: "POST",
@@ -154,11 +168,10 @@ export function DownloaderShell() {
           startMetadataTransition(() => {
             setMetadata(payload);
             setMetadataError(null);
-            if (payload.qualities[0]) {
-              setQuality((current) =>
-                payload.qualities.includes(current) ? current : payload.qualities[0],
-              );
-            }
+            setOutputName((current) => {
+              if (hasEditedOutputName && current.trim()) return current;
+              return payload.title;
+            });
           });
         })
         .catch((error: Error) => {
@@ -168,8 +181,11 @@ export function DownloaderShell() {
           });
         });
     }, 420);
-    return () => { window.clearTimeout(timeout); };
-  }, [deferredUrl]);
+
+    return () => {
+      window.clearTimeout(timeout);
+    };
+  }, [deferredUrl, hasEditedOutputName, startMetadataTransition]);
 
   async function handlePaste() {
     try {
@@ -184,35 +200,53 @@ export function DownloaderShell() {
 
   async function handleQueue() {
     const candidate = url.trim();
+    if (!candidate) {
+      setQueueError("Paste a media URL before downloading.");
+      return;
+    }
+
     if (!isLikelyUrl(candidate)) {
-      setQueueError("Provide a valid media URL before queueing.");
+      setQueueError("Provide a valid URL before queueing.");
       return;
     }
+
+    if (!outputDirectory.trim()) {
+      setQueueError("Choose a destination folder before downloading.");
+      return;
+    }
+
     setQueueError(null);
-    const response = await fetch("/api/download", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        url: candidate,
-        title: metadata?.title,
-        thumbnail: metadata?.thumbnail,
-        mode,
-        quality,
-        audioFormat,
-        threads,
-        metadata: metadata ?? undefined,
-      }),
-    });
-    const payload = await response.json();
-    if (!response.ok) {
-      setQueueError(payload.error ?? "Unable to add download.");
-      return;
+    setIsQueueing(true);
+
+    try {
+      const response = await fetch("/api/download", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          url: candidate,
+          title: metadata?.title,
+          thumbnail: metadata?.thumbnail,
+          outputDirectory,
+          outputName,
+          metadata: metadata ?? undefined,
+        }),
+      });
+
+      const payload = await response.json();
+      if (!response.ok) {
+        setQueueError(payload.error ?? "Unable to add download.");
+        return;
+      }
+
+      setSnapshot(payload.snapshot as DownloadSnapshot);
+      setSelectedJobId((payload.job as DownloadJob).id);
+      setUrl("");
+      setMetadata(null);
+      setOutputName("");
+      setHasEditedOutputName(false);
+    } finally {
+      setIsQueueing(false);
     }
-    setSnapshot(payload.snapshot as DownloadSnapshot);
-    setSelectedJobId((payload.job as DownloadJob).id);
-    setUrl("");
-    setMetadata(null);
-    setShowSettings(false);
   }
 
   async function handleCancel(jobId: string) {
@@ -251,269 +285,362 @@ export function DownloaderShell() {
     snapshot.jobs.find((job) => job.status === "downloading") ??
     null;
 
-  // Most recent jobs at the top
-  const historyJobs = [...snapshot.jobs].reverse().filter(j => j.id !== activeJob?.id);
+  const historyJobs = [...snapshot.jobs].reverse().filter((job) => job.id !== activeJob?.id);
+  const selectedJob =
+    snapshot.jobs.find((job) => job.id === selectedJobId) ??
+    activeJob ??
+    historyJobs[0] ??
+    null;
 
-  const isYtdlpReady = systemStatus?.checks?.find(c => c.name === 'yt-dlp')?.available ?? false;
+  const isYtdlpReady =
+    systemStatus?.checks.find((check) => check.name === "yt-dlp")?.available ?? false;
+
+  const sourceEstimate = metadata?.formats.reduce<number | null>((largest, format) => {
+    if (!format.filesize) return largest;
+    if (!largest) return format.filesize;
+    return Math.max(largest, format.filesize);
+  }, null);
 
   return (
     <main className={styles.page}>
       <div className={styles.shell}>
-
         <motion.section
           className={styles.stage}
           initial={{ opacity: 0, y: 12, scale: 0.98 }}
           animate={{ opacity: 1, y: 0, scale: 1 }}
           transition={{ duration: 0.7, ease: [0.16, 1, 0.3, 1] }}
         >
-          {/* Top minimal status indicator */}
-          <div className={styles.systemDiscrete} title={isYtdlpReady ? "Engine Ready" : "System initializing"}>
-            <div className={`${styles.statusDot} ${!isYtdlpReady ? styles.offline : ""}`} />
-            <span className={styles.systemBadge}>Engine {isYtdlpReady ? "Idle" : "Offline"}</span>
-          </div>
-
-          <div className={styles.hero}>
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src="/logo.png" alt="CaptureTHIS" className={styles.heroLogo} />
-            <h1 className={styles.heroTitle}>Drop a link.</h1>
-            <p className={styles.eyebrow}>High-fidelity extraction engine.</p>
-          </div>
-
-          <div className={styles.inputPanel}>
-            <div className={styles.inputRow}>
-              <input
-                className={styles.input}
-                type="url"
-                placeholder="Paste YouTube or Media URL"
-                autoComplete="off"
-                spellCheck={false}
-                value={url}
-                onChange={(e) => setUrl(e.target.value)}
-              />
-              <button
-                type="button"
-                className={styles.primaryButton}
-                onClick={url.trim() ? handleQueue : handlePaste}
-                disabled={Boolean(url.trim() && !isLikelyUrl(url.trim()))}
-              >
-                {url.trim() ? (
-                  <>
-                    <ArrowDownToLine size={18} />
-                    Download
-                  </>
-                ) : (
-                  <>
-                    <CopyPlus size={18} />
-                    Paste
-                  </>
-                )}
-              </button>
+          <div className={styles.topBar}>
+            <p className={styles.brandMark}>Capture This</p>
+            <div
+              className={`${styles.engineBadge} ${isYtdlpReady ? "" : styles.engineBadgeOffline}`}
+              title={isYtdlpReady ? "Engine ready" : "System initializing"}
+            >
+              <span className={`${styles.statusDot} ${isYtdlpReady ? "" : styles.offline}`} />
+              <span>Engine {isYtdlpReady ? "Ready" : "Offline"}</span>
             </div>
-
-            {/* Inline Metadata (if loaded and URL is present) */}
-            <AnimatePresence>
-              {metadata && url.trim() && (
-                <motion.div
-                  className={styles.metadataInline}
-                  initial={{ opacity: 0, height: 0, marginTop: 0 }}
-                  animate={{ opacity: 1, height: "auto", marginTop: 16 }}
-                  exit={{ opacity: 0, height: 0, marginTop: 0 }}
-                  transition={{ duration: 0.3, ease: "easeInOut" }}
-                >
-                  <div className={styles.thumbnailFrame}>
-                    {metadata.thumbnail ? (
-                      <Image
-                        src={metadata.thumbnail}
-                        alt="Thumbnail"
-                        fill
-                        unoptimized
-                        className={styles.thumbnail}
-                      />
-                    ) : (
-                      <div className={styles.thumbnailFallback}>
-                        <FileVideo2 size={24} />
-                      </div>
-                    )}
-                  </div>
-                  <div className={styles.metadataContent}>
-                    <h3 className={styles.metadataTitle}>{metadata.title}</h3>
-                    <p className={styles.metadataSub}>
-                      <span>{metadata.durationLabel}</span> • <span>{metadata.uploader}</span>
-                    </p>
-                  </div>
-                  {/* Settings Toggle placed cleanly on the right of metadata */}
-                  <button
-                    type="button"
-                    className={styles.settingsToggle}
-                    onClick={() => setShowSettings(!showSettings)}
-                    style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted-strong)', display: 'flex', alignItems: 'center', gap: 6, padding: '8px 12px', borderRadius: '8px', transition: 'background 0.2s' }}
-                    onMouseOver={(e) => e.currentTarget.style.background = 'var(--stroke)'}
-                    onMouseOut={(e) => e.currentTarget.style.background = 'transparent'}
-                  >
-                    <Settings2 size={16} />
-                    <span style={{ fontSize: '0.8rem', fontWeight: 500 }}>Options</span>
-                  </button>
-                </motion.div>
-              )}
-            </AnimatePresence>
-
-            {/* Elegant dropdown settings area */}
-            <AnimatePresence>
-              {showSettings && metadata && url.trim() && (
-                <motion.div
-                  className={styles.controlsDrawer}
-                  initial={{ opacity: 0, y: -10, height: 0 }}
-                  animate={{ opacity: 1, y: 0, height: "auto" }}
-                  exit={{ opacity: 0, y: -10, height: 0 }}
-                >
-                  <div className={styles.controlRow}>
-                    <label className={styles.field}>
-                      <span>Format</span>
-                      <select className={styles.select} value={mode} onChange={(e) => setMode(e.target.value as DownloadMode)}>
-                        {FORMAT_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
-                      </select>
-                    </label>
-
-                    <label className={styles.field}>
-                      <span>Quality</span>
-                      <select
-                        className={styles.select}
-                        value={quality}
-                        onChange={(e) => setQuality(e.target.value)}
-                        disabled={mode === "audio"}
-                      >
-                        {(metadata?.qualities.length ? metadata.qualities : ["2160", "1440", "1080", "720", "480"]).map(opt => (
-                          <option key={opt} value={opt}>{opt === "2160" ? "4K (Native)" : `${opt}p`}</option>
-                        ))}
-                      </select>
-                    </label>
-
-                    <label className={styles.field}>
-                      <span>Audio Codec</span>
-                      <select
-                        className={styles.select}
-                        value={audioFormat}
-                        onChange={(e) => setAudioFormat(e.target.value as AudioFormat)}
-                        disabled={mode !== "audio"}
-                      >
-                        {AUDIO_OPTIONS.map((opt) => (
-                          <option key={opt.value} value={opt.value}>{opt.label}</option>
-                        ))}
-                      </select>
-                    </label>
-                  </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
           </div>
 
-          <AnimatePresence>
-            {(queueError || metadataError) && (
-              <motion.div
-                className={styles.alert}
-                initial={{ opacity: 0, height: 0 }}
-                animate={{ opacity: 1, height: "auto" }}
-                exit={{ opacity: 0, height: 0 }}
-              >
-                <AlertCircle size={18} />
-                <span>{queueError ?? metadataError}</span>
-              </motion.div>
-            )}
-          </AnimatePresence>
+          <div className={styles.layout}>
+            <section className={styles.commandDeck}>
+              <div className={styles.hero}>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src="/logo.png" alt="CaptureTHIS" className={styles.heroLogo} />
+                <h1 className={styles.heroTitle}>Capture This</h1>
+                <p className={styles.eyebrow}>
+                  Paste a link, set the destination folder, name the file, and queue the download.
+                </p>
+              </div>
 
-          {/* Active Download Progress */}
-          <AnimatePresence>
-            {activeJob && (
-              <motion.div
-                className={styles.livePanel}
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, scale: 0.98 }}
+              <form
+                className={styles.inputPanel}
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void handleQueue();
+                }}
               >
-                <div className={styles.liveHeader}>
-                  <div>
-                    <strong>{activeJob.title}</strong>
-                    <p className={styles.liveStatus}>{humanStatus(activeJob.status)} • {activeJob.mode === "audio" ? activeJob.audioFormat.toUpperCase() : `${activeJob.quality}p`}</p>
-                  </div>
-                  <div className={styles.liveStats}>
-                    <span>{activeJob.progress.speed ?? "Calculating..."}</span>
-                    <span>{activeJob.progress.eta ? `~ ${activeJob.progress.eta}` : ""}</span>
-                  </div>
-                </div>
-
-                <div className={styles.progressBar}>
-                  <motion.div
-                    className={styles.progressFill}
-                    animate={{ width: `${Math.max(activeJob.progress.percent, 2)}%` }}
-                    transition={{ duration: 0.2 }}
+                <label className={styles.inputLabel} htmlFor="media-url">
+                  Source Link
+                </label>
+                <div className={styles.inputRow}>
+                  <input
+                    id="media-url"
+                    className={styles.input}
+                    type="url"
+                    placeholder="Paste YouTube or media URL"
+                    autoComplete="off"
+                    spellCheck={false}
+                    value={url}
+                    onChange={(event) => setUrl(event.target.value)}
                   />
                 </div>
-
-                <div className={styles.liveFooter}>
-                  <span>{activeJob.progress.percentLabel}</span>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                    <span>{activeJob.progress.downloaded ?? "0"} {activeJob.progress.total ? `/ ${activeJob.progress.total}` : ""}</span>
-                    <button
-                      type="button"
-                      className={styles.cancelButton}
-                      onClick={() => handleCancel(activeJob.id)}
-                      disabled={isCancelling}
-                      title="Cancel download"
-                    >
-                      <XCircle size={16} />
-                      Cancel
-                    </button>
-                  </div>
+                <div className={styles.inputMeta}>
+                  <span>
+                    {isMetadataPending
+                      ? "Scanning source profile..."
+                      : url.trim() && metadata
+                        ? "Source ready. Confirm folder and file name, then download."
+                        : "The download button stays available. Invalid URLs return an error when submitted."}
+                  </span>
+                  {isMetadataPending ? (
+                    <span className={styles.inlineStatus}>
+                      <LoaderCircle size={14} className={styles.spinner} />
+                      Inspecting
+                    </span>
+                  ) : null}
                 </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
 
-          {/* History List below main control */}
-          {historyJobs.length > 0 && (
-            <div className={styles.historySection}>
-              <div className={styles.historyHeader}>
-                <Layers3 size={16} />
-                <span>Recent Extractions</span>
-              </div>
-              <div className={styles.historyList}>
-                {historyJobs.slice(0, 5).map(job => (
-                  <div key={job.id} className={styles.historyCard}>
-                    <div className={styles.historyMain}>
-                      <strong>{job.title}</strong>
-                      <span>{job.mode === "audio" ? job.audioFormat.toUpperCase() : `${job.quality}p`}</span>
-                    </div>
-                    <div className={styles.historyMeta}>
-                      {job.status === "completed" ? (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                          {job.filePath && (
-                            <button
-                              type="button"
-                              className={styles.revealButton}
-                              onClick={() => handleReveal(job.filePath!)}
-                              title="Show in Finder"
-                            >
-                              <FolderOpen size={16} />
-                              <span>Finder</span>
-                            </button>
-                          )}
-                          <CheckCircle2 size={18} color="var(--success)" />
-                        </div>
-                      ) : job.status === "cancelled" ? (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <Ban size={16} color="var(--muted)" />
-                          <span className={styles.historyStatus}>Cancelled</span>
-                        </div>
+                <div className={styles.organizerGrid}>
+                  <label className={styles.field}>
+                    <span>Destination Folder</span>
+                    <input
+                      className={styles.textField}
+                      type="text"
+                      placeholder={systemStatus?.downloadDirectory ?? "~/Downloads/Capture This"}
+                      value={outputDirectory}
+                      onChange={(event) => {
+                        setHasEditedOutputDirectory(true);
+                        setOutputDirectory(event.target.value);
+                      }}
+                    />
+                  </label>
+
+                  <label className={styles.field}>
+                    <span>File Name</span>
+                    <input
+                      className={styles.textField}
+                      type="text"
+                      placeholder={metadata?.title ?? "Enter file name"}
+                      value={outputName}
+                      onChange={(event) => {
+                        setHasEditedOutputName(true);
+                        setOutputName(event.target.value);
+                      }}
+                    />
+                  </label>
+                </div>
+
+                <div className={styles.actionRow}>
+                  <button type="button" className={styles.ghostButton} onClick={handlePaste}>
+                    <CopyPlus size={16} />
+                    Paste Link
+                  </button>
+                  <button
+                    type="submit"
+                    className={`${styles.ghostButton} ${styles.primaryAction} ${styles.downloadButton}`}
+                    disabled={!url.trim() || isQueueing}
+                  >
+                    <ArrowDownToLine size={16} />
+                    Download
+                  </button>
+                </div>
+              </form>
+
+              <AnimatePresence>
+                {metadata && url.trim() ? (
+                  <motion.div
+                    className={styles.metadataCard}
+                    initial={{ opacity: 0, y: 12 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -10 }}
+                    transition={{ duration: 0.28, ease: [0.16, 1, 0.3, 1] }}
+                  >
+                    <div className={styles.thumbnailFrame}>
+                      {metadata.thumbnail ? (
+                        <Image
+                          src={metadata.thumbnail}
+                          alt="Thumbnail"
+                          fill
+                          unoptimized
+                          className={styles.thumbnail}
+                        />
                       ) : (
-                        <span className={styles.historyStatus}>{humanStatus(job.status)}</span>
+                        <div className={styles.thumbnailFallback}>
+                          <FileVideo2 size={28} />
+                        </div>
                       )}
                     </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
+                    <div className={styles.metadataContent}>
+                      <div className={styles.metadataHeader}>
+                        <p className={styles.sectionLabel}>Source</p>
+                        <span className={styles.metadataTag}>
+                          {metadata.extractor ?? "Media Source"}
+                        </span>
+                      </div>
+                      <h2 className={styles.metadataTitle}>{metadata.title}</h2>
+                      <p className={styles.metadataSub}>{metadata.uploader ?? "Unknown uploader"}</p>
+                      <div className={styles.metadataGrid}>
+                        <div className={styles.statBlock}>
+                          <span>Duration</span>
+                          <strong>{metadata.durationLabel}</strong>
+                        </div>
+                        <div className={styles.statBlock}>
+                          <span>Max Render</span>
+                          <strong>{DEFAULT_DOWNLOAD_QUALITY}P</strong>
+                        </div>
+                        <div className={styles.statBlock}>
+                          <span>Est. Payload</span>
+                          <strong>{formatBytes(sourceEstimate ?? null)}</strong>
+                        </div>
+                      </div>
+                      <p className={styles.metadataNote}>
+                        Current output: {outputName.trim() || metadata.title}. Files save to{" "}
+                        {outputDirectory.trim() || systemStatus?.downloadDirectory || "your chosen folder"}.
+                      </p>
+                    </div>
+                  </motion.div>
+                ) : null}
+              </AnimatePresence>
 
+              <AnimatePresence>
+                {queueError || metadataError ? (
+                  <motion.div
+                    className={styles.alert}
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: "auto" }}
+                    exit={{ opacity: 0, height: 0 }}
+                  >
+                    <AlertCircle size={18} />
+                    <span>{queueError ?? metadataError}</span>
+                  </motion.div>
+                ) : null}
+              </AnimatePresence>
+
+              {historyJobs.length > 0 ? (
+                <section className={styles.historySection}>
+                  <div className={styles.historyHeader}>
+                    <Layers3 size={16} />
+                    <span>Recent Extractions</span>
+                  </div>
+                  <div className={styles.historyList}>
+                    {historyJobs.slice(0, 6).map((job) => (
+                      <button
+                        key={job.id}
+                        type="button"
+                        className={`${styles.historyCard} ${selectedJobId === job.id ? styles.historyCardActive : ""}`}
+                        onClick={() => setSelectedJobId(job.id)}
+                      >
+                        <div className={styles.historyMain}>
+                          <strong>{job.outputName}</strong>
+                          <span>{formatTimestamp(job.createdAt)}</span>
+                        </div>
+                        <div className={styles.historyMeta}>
+                          <span className={`${styles.historyStatus} ${styles[toneClass(job.status)]}`}>
+                            {job.status === "cancelled" ? (
+                              <>
+                                <Ban size={14} />
+                                Cancelled
+                              </>
+                            ) : job.status === "completed" ? (
+                              <>
+                                <CheckCircle2 size={14} />
+                                Complete
+                              </>
+                            ) : (
+                              humanStatus(job.status)
+                            )}
+                          </span>
+                          <small>{job.outputDirectory}</small>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </section>
+              ) : null}
+            </section>
+
+            <aside className={styles.sideRail}>
+              <section className={styles.sidePanel}>
+                <div className={styles.panelHeader}>
+                  <p className={styles.sectionLabel}>System</p>
+                  <span className={styles.panelMeta}>
+                    {systemStatus?.ok ? "Online" : "Booting"}
+                  </span>
+                </div>
+                <div className={styles.systemList}>
+                  <div className={styles.systemRow}>
+                    <span>Default Folder</span>
+                    <strong>{systemStatus?.downloadDirectory ?? "Resolving output path..."}</strong>
+                  </div>
+                  <div className={styles.systemRow}>
+                    <span>Next File</span>
+                    <strong>{outputName.trim() || metadata?.title || "Enter a file name"}</strong>
+                  </div>
+                  <div className={styles.systemRow}>
+                    <span>Next Destination</span>
+                    <strong>{outputDirectory.trim() || systemStatus?.downloadDirectory || "Enter a folder path"}</strong>
+                  </div>
+                  {(systemStatus?.checks ?? []).map((check) => (
+                    <div key={check.name} className={styles.systemRow}>
+                      <span>{check.name}</span>
+                      <strong className={check.available ? styles.toneNeutral : styles.toneDanger}>
+                        {check.available ? "Available" : "Unavailable"}
+                      </strong>
+                    </div>
+                  ))}
+                </div>
+              </section>
+
+              <section className={styles.sidePanel}>
+                <div className={styles.panelHeader}>
+                  <p className={styles.sectionLabel}>Live Output</p>
+                  <span className={`${styles.liveBadge} ${selectedJob ? styles[toneClass(selectedJob.status)] : styles.toneNeutral}`}>
+                    <RadioTower size={14} />
+                    {selectedJob ? humanStatus(selectedJob.status) : "Standby"}
+                  </span>
+                </div>
+
+                {selectedJob ? (
+                  <div className={styles.liveStack}>
+                    <div className={styles.liveHeading}>
+                      <strong>{selectedJob.outputName}</strong>
+                      <span>{selectedJob.quality}P / {formatTimestamp(selectedJob.updatedAt)}</span>
+                    </div>
+
+                    <div className={styles.progressWrap}>
+                      <div className={styles.progressBar}>
+                        <motion.div
+                          className={`${styles.progressFill} ${styles[toneClass(selectedJob.status)]}`}
+                          animate={{ width: `${Math.max(selectedJob.progress.percent, 2)}%` }}
+                          transition={{ duration: 0.2 }}
+                        />
+                      </div>
+                      <div className={styles.progressMeta}>
+                        <span>{selectedJob.progress.percentLabel}</span>
+                        <span>{selectedJob.progress.speed ?? "Awaiting transfer metrics"}</span>
+                      </div>
+                    </div>
+
+                    <div className={styles.liveDetails}>
+                      <div className={styles.systemRow}>
+                        <span>Destination</span>
+                        <strong>{selectedJob.outputDirectory}</strong>
+                      </div>
+                      <div className={styles.systemRow}>
+                        <span>Payload</span>
+                        <strong>
+                          {selectedJob.progress.downloaded ?? "0"}
+                          {selectedJob.progress.total ? ` / ${selectedJob.progress.total}` : ""}
+                        </strong>
+                      </div>
+                      <div className={styles.systemRow}>
+                        <span>Status</span>
+                        <strong>{selectedJob.error ?? humanStatus(selectedJob.status)}</strong>
+                      </div>
+                    </div>
+
+                    <div className={styles.liveActions}>
+                      {selectedJob.filePath ? (
+                        <button
+                          type="button"
+                          className={styles.ghostButton}
+                          onClick={() => handleReveal(selectedJob.filePath!)}
+                        >
+                          <FolderOpen size={16} />
+                          Reveal File
+                        </button>
+                      ) : null}
+                      {selectedJob.status === "downloading" || selectedJob.status === "queued" ? (
+                        <button
+                          type="button"
+                          className={`${styles.ghostButton} ${styles.dangerButton}`}
+                          onClick={() => handleCancel(selectedJob.id)}
+                          disabled={isCancelling}
+                        >
+                          <XCircle size={16} />
+                          Cancel
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+                ) : (
+                  <div className={styles.emptyState}>
+                    No active extractions. Paste a URL, set the folder and file name, and download.
+                  </div>
+                )}
+              </section>
+            </aside>
+          </div>
         </motion.section>
       </div>
     </main>

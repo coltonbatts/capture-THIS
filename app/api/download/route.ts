@@ -1,7 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { downloadManager } from "@/lib/download-manager";
-import type { AudioFormat, DownloadMode, DownloadRequest, MetadataResponse } from "@/lib/types";
+import {
+  DEFAULT_AUDIO_FORMAT,
+  DEFAULT_DOWNLOAD_MODE,
+  DEFAULT_DOWNLOAD_QUALITY,
+  DEFAULT_DOWNLOAD_THREADS,
+} from "@/lib/download-preset";
+import type { DownloadRequest, MetadataResponse } from "@/lib/types";
 import { isLikelyUrl, normalizeUrl } from "@/lib/url";
 
 export const runtime = "nodejs";
@@ -11,14 +17,6 @@ const encoder = new TextEncoder();
 
 function toSseChunk(event: string, payload: unknown) {
   return encoder.encode(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
-}
-
-function isMode(value: string): value is DownloadMode {
-  return value === "video-audio" || value === "video-only" || value === "audio";
-}
-
-function isAudioFormat(value: string): value is AudioFormat {
-  return value === "mp3" || value === "flac";
 }
 
 export async function GET(request: NextRequest) {
@@ -88,25 +86,16 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const requestedMode = body.mode ?? "";
-    const requestedAudioFormat = body.audioFormat ?? "";
-    const mode: DownloadMode = isMode(requestedMode)
-      ? requestedMode
-      : "video-audio";
-    const audioFormat: AudioFormat = isAudioFormat(requestedAudioFormat)
-      ? requestedAudioFormat
-      : "mp3";
-    const quality = body.quality?.trim() || "2160";
-    const threads = Math.min(Math.max(Number(body.threads ?? 8), 1), 16);
-
     const job = await downloadManager.enqueue({
       url,
       title: body.title?.trim(),
       thumbnail: body.thumbnail ?? null,
-      mode,
-      quality,
-      audioFormat,
-      threads,
+      mode: DEFAULT_DOWNLOAD_MODE,
+      quality: DEFAULT_DOWNLOAD_QUALITY,
+      audioFormat: DEFAULT_AUDIO_FORMAT,
+      threads: DEFAULT_DOWNLOAD_THREADS,
+      outputDirectory: body.outputDirectory?.trim() ?? "",
+      outputName: body.outputName?.trim(),
       metadata: body.metadata,
     });
 
@@ -141,4 +130,3 @@ export async function DELETE(request: NextRequest) {
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
-

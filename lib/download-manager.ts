@@ -7,7 +7,12 @@ import type {
   DownloadRequest,
   DownloadSnapshot,
 } from "@/lib/types";
-import { downloadDirectory, ensureDownloadDirectory, assertSystemReady } from "@/lib/system";
+import {
+  ensureDownloadDirectory,
+  ensureOutputDirectory,
+  assertSystemReady,
+  resolveOutputDirectory,
+} from "@/lib/system";
 import { buildYtDlpArguments, getMetadata } from "@/lib/yt-dlp";
 import { loadJobs, saveJobs } from "@/lib/store";
 
@@ -27,6 +32,12 @@ function createProgress() {
 function cleanField(value: string | undefined) {
   const trimmed = value?.trim() ?? "";
   return trimmed || null;
+}
+
+function normalizeOutputName(value: string | undefined, fallback: string) {
+  const candidate = value?.trim() || fallback;
+  const sanitized = candidate.replace(/[<>:"/\\|?*\u0000-\u001F]/g, " ");
+  return sanitized.replace(/\s+/g, " ").trim() || fallback;
 }
 
 class DownloadManager {
@@ -104,6 +115,9 @@ class DownloadManager {
       thumbnail = request.thumbnail ?? metadata.thumbnail ?? null;
     }
 
+    const outputDirectory = ensureOutputDirectory(request.outputDirectory);
+    const outputName = normalizeOutputName(request.outputName, title);
+
     const now = new Date().toISOString();
     const job: DownloadJob = {
       id: randomUUID(),
@@ -115,6 +129,8 @@ class DownloadManager {
       mode: request.mode,
       audioFormat: request.audioFormat,
       threads: request.threads,
+      outputDirectory,
+      outputName,
       progress: createProgress(),
       filePath: null,
       error: null,
@@ -237,8 +253,9 @@ class DownloadManager {
         quality: current.quality,
         audioFormat: current.audioFormat,
         threads: current.threads,
+        outputDirectory: resolveOutputDirectory(current.outputDirectory),
+        outputName: current.outputName,
       },
-      downloadDirectory,
     );
 
     await new Promise<void>((resolve) => {

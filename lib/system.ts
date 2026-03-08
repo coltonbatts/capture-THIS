@@ -1,17 +1,18 @@
 import { execFileSync, execFile } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
 import type { SystemCheck, SystemStatus } from "@/lib/types";
+import { DEFAULT_OUTPUT_FOLDER_NAME } from "@/lib/download-preset";
 
 export const downloadDirectory = join(
   homedir(),
   "Downloads",
-  "Infinite-Downloader",
+  DEFAULT_OUTPUT_FOLDER_NAME,
 );
 
 function resolveBinary(command: "yt-dlp" | "ffmpeg"): SystemCheck {
@@ -39,9 +40,23 @@ function resolveBinary(command: "yt-dlp" | "ffmpeg"): SystemCheck {
   }
 }
 
+export function resolveOutputDirectory(candidate?: string) {
+  const trimmed = candidate?.trim();
+  if (!trimmed) {
+    return downloadDirectory;
+  }
+
+  return isAbsolute(trimmed) ? resolve(trimmed) : resolve(downloadDirectory, trimmed);
+}
+
+export function ensureOutputDirectory(candidate?: string) {
+  const target = resolveOutputDirectory(candidate);
+  mkdirSync(target, { recursive: true });
+  return target;
+}
+
 export function ensureDownloadDirectory() {
-  mkdirSync(downloadDirectory, { recursive: true });
-  return downloadDirectory;
+  return ensureOutputDirectory(downloadDirectory);
 }
 
 export function getSystemStatus(): SystemStatus {
@@ -87,4 +102,3 @@ export async function updateYtDlp(): Promise<string> {
     throw new Error("Failed to run yt-dlp update.");
   }
 }
-

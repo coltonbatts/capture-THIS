@@ -165,10 +165,14 @@ function parseHeight(quality: string) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-export function buildYtDlpArguments(
-  request: DownloadRequest,
-  outputDirectory: string,
-) {
+function sanitizeOutputName(value: string | undefined, fallback: string) {
+  const candidate = (value?.trim() || fallback).replace(/[<>:"/\\|?*\u0000-\u001F]/g, " ");
+  const collapsed = candidate.replace(/\s+/g, " ").trim();
+  return collapsed || "Untitled";
+}
+
+export function buildYtDlpArguments(request: DownloadRequest) {
+  const outputName = sanitizeOutputName(request.outputName, request.title ?? "Untitled");
   const args = [
     "--newline",
     "--no-playlist",
@@ -177,9 +181,9 @@ export function buildYtDlpArguments(
     "-N",
     String(request.threads),
     "-P",
-    outputDirectory,
+    request.outputDirectory,
     "-o",
-    "%(title)s [%(id)s].%(ext)s",
+    `${outputName}.%(ext)s`,
   ];
 
   const maxHeight = parseHeight(request.quality);

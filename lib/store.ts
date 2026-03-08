@@ -31,6 +31,9 @@ export function loadJobs(): Map<string, DownloadJob> {
                 };
             }
 
+            job.outputDirectory = job.outputDirectory || dirname(job.filePath || downloadDirectory);
+            job.outputName = job.outputName || job.title;
+
             jobs.set(job.id, job);
         }
 
