@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync, renameSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 
 import type { DownloadJob } from "@/lib/types";
+import { DEFAULT_OUTPUT_CONTAINER, DEFAULT_VIDEO_PROFILE } from "@/lib/download-preset";
 import { downloadDirectory } from "@/lib/system";
 
 const HISTORY_FILE = join(downloadDirectory, ".capturethis-history.json");
@@ -33,6 +34,8 @@ export function loadJobs(): Map<string, DownloadJob> {
 
             job.outputDirectory = job.outputDirectory || dirname(job.filePath || downloadDirectory);
             job.outputName = job.outputName || job.title;
+            job.outputContainer = job.outputContainer || DEFAULT_OUTPUT_CONTAINER;
+            job.videoProfile = job.videoProfile || DEFAULT_VIDEO_PROFILE;
 
             jobs.set(job.id, job);
         }

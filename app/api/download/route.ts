@@ -6,6 +6,8 @@ import {
   DEFAULT_DOWNLOAD_MODE,
   DEFAULT_DOWNLOAD_QUALITY,
   DEFAULT_DOWNLOAD_THREADS,
+  DEFAULT_OUTPUT_CONTAINER,
+  DEFAULT_VIDEO_PROFILE,
 } from "@/lib/download-preset";
 import type { DownloadRequest, MetadataResponse } from "@/lib/types";
 import { isLikelyUrl, normalizeUrl } from "@/lib/url";
@@ -91,8 +93,10 @@ export async function POST(request: NextRequest) {
       title: body.title?.trim(),
       thumbnail: body.thumbnail ?? null,
       mode: DEFAULT_DOWNLOAD_MODE,
-      quality: DEFAULT_DOWNLOAD_QUALITY,
+      quality: body.quality?.trim() || DEFAULT_DOWNLOAD_QUALITY,
       audioFormat: DEFAULT_AUDIO_FORMAT,
+      outputContainer: body.outputContainer ?? DEFAULT_OUTPUT_CONTAINER,
+      videoProfile: body.videoProfile ?? DEFAULT_VIDEO_PROFILE,
       threads: DEFAULT_DOWNLOAD_THREADS,
       outputDirectory: body.outputDirectory?.trim() ?? "",
       outputName: body.outputName?.trim(),

@@ -8,7 +8,7 @@ CaptureTHIS is a Next.js App Router downloader shell with a goth-minimal interfa
 - `yt-dlp` available in `PATH`
 - `ffmpeg` available in `PATH`
 
-Downloads are written to `~/Downloads/Infinite-Downloader/`.
+Downloads are written to `~/Downloads/Capture This/`.
 
 ## Run
 

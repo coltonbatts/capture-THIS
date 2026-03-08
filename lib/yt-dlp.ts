@@ -6,6 +6,8 @@ import type {
   DownloadRequest,
   MediaFormatSummary,
   MetadataResponse,
+  VideoContainer,
+  VideoProfile,
 } from "@/lib/types";
 import { assertSystemReady } from "@/lib/system";
 import { normalizeUrl } from "@/lib/url";
@@ -165,6 +167,63 @@ function parseHeight(quality: string) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function buildCompatibleVideoSelector(heightFilter: string) {
+  return [
+    `bestvideo[ext=mp4][vcodec^=avc1]${heightFilter}+bestaudio[ext=m4a]`,
+    `bestvideo[vcodec^=avc1]${heightFilter}+bestaudio[acodec^=mp4a]`,
+    `best[ext=mp4][vcodec^=avc1][acodec^=mp4a]${heightFilter}`,
+    `best[ext=mp4][vcodec^=avc1]${heightFilter}`,
+    `best[ext=mp4]${heightFilter}`,
+    `best${heightFilter}`,
+  ].join("/");
+}
+
+function buildCompatibleVideoOnlySelector(heightFilter: string) {
+  return [
+    `bestvideo[ext=mp4][vcodec^=avc1]${heightFilter}`,
+    `bestvideo[ext=mp4]${heightFilter}`,
+    `bestvideo${heightFilter}`,
+  ].join("/");
+}
+
+function buildHighestVideoSelector(heightFilter: string) {
+  return `bestvideo*${heightFilter}+bestaudio/best*${heightFilter}/best${heightFilter}`;
+}
+
+function buildHighestVideoOnlySelector(heightFilter: string) {
+  return `bestvideo*${heightFilter}/bestvideo${heightFilter}`;
+}
+
+function buildWebmVideoSelector(heightFilter: string) {
+  return [
+    `bestvideo[ext=webm]${heightFilter}+bestaudio[ext=webm]`,
+    `best[ext=webm]${heightFilter}`,
+    buildHighestVideoSelector(heightFilter),
+  ].join("/");
+}
+
+function buildWebmVideoOnlySelector(heightFilter: string) {
+  return [
+    `bestvideo[ext=webm]${heightFilter}`,
+    buildHighestVideoOnlySelector(heightFilter),
+  ].join("/");
+}
+
+function resolveContainerProfile(
+  outputContainer: VideoContainer,
+  videoProfile: VideoProfile,
+): VideoProfile {
+  if (outputContainer === "mov") {
+    return "compatible";
+  }
+
+  if (outputContainer === "webm") {
+    return "highest";
+  }
+
+  return videoProfile;
+}
+
 function sanitizeOutputName(value: string | undefined, fallback: string) {
   const candidate = (value?.trim() || fallback).replace(/[<>:"/\\|?*\u0000-\u001F]/g, " ");
   const collapsed = candidate.replace(/\s+/g, " ").trim();
@@ -188,6 +247,10 @@ export function buildYtDlpArguments(request: DownloadRequest) {
 
   const maxHeight = parseHeight(request.quality);
   const heightFilter = maxHeight ? `[height<=${maxHeight}]` : "";
+  const resolvedProfile = resolveContainerProfile(
+    request.outputContainer,
+    request.videoProfile,
+  );
 
   if (request.mode === "audio") {
     args.push(
@@ -202,13 +265,31 @@ export function buildYtDlpArguments(request: DownloadRequest) {
       "--add-metadata",
     );
   } else if (request.mode === "video-only") {
-    args.push("-f", `bestvideo*${heightFilter}/bestvideo`);
+    const selector =
+      request.outputContainer === "webm"
+        ? buildWebmVideoOnlySelector(heightFilter)
+        : resolvedProfile === "compatible"
+          ? buildCompatibleVideoOnlySelector(heightFilter)
+          : buildHighestVideoOnlySelector(heightFilter);
+
+    args.push("-f", selector);
+
+    if (request.outputContainer !== "webm") {
+      args.push("--remux-video", request.outputContainer);
+    }
   } else {
+    const selector =
+      request.outputContainer === "webm"
+        ? buildWebmVideoSelector(heightFilter)
+        : resolvedProfile === "compatible"
+          ? buildCompatibleVideoSelector(heightFilter)
+          : buildHighestVideoSelector(heightFilter);
+
     args.push(
       "-f",
-      `bestvideo*${heightFilter}+bestaudio/best*${heightFilter}/best`,
+      selector,
       "--merge-output-format",
-      "mp4",
+      request.outputContainer,
     );
   }
 

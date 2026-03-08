@@ -1,5 +1,7 @@
 export type DownloadMode = "video-audio" | "video-only" | "audio";
 export type AudioFormat = "mp3" | "flac";
+export type VideoContainer = "mp4" | "mov" | "mkv" | "webm";
+export type VideoProfile = "compatible" | "highest";
 export type JobStatus = "queued" | "downloading" | "completed" | "failed" | "cancelled";
 
 export interface SystemCheck {
@@ -46,6 +48,8 @@ export interface DownloadRequest {
   mode: DownloadMode;
   quality: string;
   audioFormat: AudioFormat;
+  outputContainer: VideoContainer;
+  videoProfile: VideoProfile;
   threads: number;
   outputDirectory: string;
   outputName?: string;
@@ -70,6 +74,8 @@ export interface DownloadJob {
   quality: string;
   mode: DownloadMode;
   audioFormat: AudioFormat;
+  outputContainer: VideoContainer;
+  videoProfile: VideoProfile;
   threads: number;
   outputDirectory: string;
   outputName: string;

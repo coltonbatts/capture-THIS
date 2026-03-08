@@ -1,5 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { existsSync, readdirSync, statSync } from "node:fs";
+import { join } from "node:path";
 
 import type {
   DownloadEvent,
@@ -38,6 +40,31 @@ function normalizeOutputName(value: string | undefined, fallback: string) {
   const candidate = value?.trim() || fallback;
   const sanitized = candidate.replace(/[<>:"/\\|?*\u0000-\u001F]/g, " ");
   return sanitized.replace(/\s+/g, " ").trim() || fallback;
+}
+
+function resolveCompletedFilePath(job: DownloadJob) {
+  if (job.filePath && existsSync(job.filePath)) {
+    return job.filePath;
+  }
+
+  try {
+    const outputDirectory = resolveOutputDirectory(job.outputDirectory);
+    const prefix = `${job.outputName}.`;
+    const matches = readdirSync(outputDirectory)
+      .filter((entry) => entry.startsWith(prefix))
+      .map((entry) => join(outputDirectory, entry))
+      .filter((candidate) => existsSync(candidate))
+      .sort((left, right) => {
+        return statSync(right).mtimeMs - statSync(left).mtimeMs;
+      });
+
+    const preferred = matches.find((candidate) =>
+      candidate.endsWith(`.${job.outputContainer}`),
+    );
+    return preferred ?? matches[0] ?? null;
+  } catch {
+    return null;
+  }
 }
 
 class DownloadManager {
@@ -128,6 +155,8 @@ class DownloadManager {
       quality: request.quality,
       mode: request.mode,
       audioFormat: request.audioFormat,
+      outputContainer: request.outputContainer,
+      videoProfile: request.videoProfile,
       threads: request.threads,
       outputDirectory,
       outputName,
@@ -252,6 +281,8 @@ class DownloadManager {
         mode: current.mode,
         quality: current.quality,
         audioFormat: current.audioFormat,
+        outputContainer: current.outputContainer,
+        videoProfile: current.videoProfile,
         threads: current.threads,
         outputDirectory: resolveOutputDirectory(current.outputDirectory),
         outputName: current.outputName,
@@ -361,8 +392,20 @@ class DownloadManager {
 
         if (code === 0) {
           const job = this.jobs.get(jobId);
+          const completedFilePath = job ? resolveCompletedFilePath(job) : null;
+
+          if (!completedFilePath) {
+            this.updateJob(jobId, {
+              status: "failed",
+              error: "yt-dlp finished without producing a saved output file.",
+            });
+            resolve();
+            return;
+          }
+
           this.updateJob(jobId, {
             status: "completed",
+            filePath: completedFilePath,
             progress: {
               ...(job?.progress ?? createProgress()),
               percent: 100,
