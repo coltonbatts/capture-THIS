@@ -88,6 +88,7 @@ function formatContainerLabel(outputContainer: VideoContainer) {
 }
 
 function formatProfileLabel(videoProfile: VideoProfile) {
+  if (videoProfile === "prores") return "ProRes 422 HQ";
   return videoProfile === "compatible" ? "QuickTime compatible" : "Highest available";
 }
 
@@ -423,10 +424,10 @@ export function DownloaderShell() {
     readyDrafts.length > 1 ? `Queue ${readyDrafts.length} Downloads` : "Download";
   const resolvedProfile =
     outputContainer === "mov"
-      ? "compatible"
+      ? (videoProfile === "prores" ? "prores" : "compatible")
       : outputContainer === "webm"
         ? "highest"
-        : videoProfile;
+        : (videoProfile === "prores" ? "highest" : videoProfile);
   return (
     <main className={styles.page}>
       <div className={styles.shell}>
@@ -518,9 +519,13 @@ export function DownloaderShell() {
                         const nextContainer = event.target.value as VideoContainer;
                         setOutputContainer(nextContainer);
                         if (nextContainer === "mov") {
-                          setVideoProfile("compatible");
+                          setVideoProfile(videoProfile === "prores" ? "prores" : "compatible");
                         } else if (nextContainer === "webm") {
                           setVideoProfile("highest");
+                        } else {
+                          if (videoProfile === "prores") {
+                            setVideoProfile("highest");
+                          }
                         }
                       }}
                     >
@@ -539,10 +544,13 @@ export function DownloaderShell() {
                       onChange={(event) => {
                         setVideoProfile(event.target.value as VideoProfile);
                       }}
-                      disabled={outputContainer === "mov" || outputContainer === "webm"}
+                      disabled={outputContainer === "webm"}
                     >
-                      <option value="compatible">QuickTime compatible</option>
-                      <option value="highest">Highest available</option>
+                      <option value="compatible" disabled={outputContainer === "webm"}>QuickTime compatible</option>
+                      <option value="highest" disabled={outputContainer === "mov"}>Highest available</option>
+                      {outputContainer === "mov" && (
+                        <option value="prores">ProRes 422 HQ (Editor Optimized)</option>
+                      )}
                     </select>
                   </label>
                 </div>

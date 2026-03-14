@@ -1,7 +1,7 @@
 export type DownloadMode = "video-audio" | "video-only" | "audio";
 export type AudioFormat = "mp3" | "flac";
 export type VideoContainer = "mp4" | "mov" | "mkv" | "webm";
-export type VideoProfile = "compatible" | "highest";
+export type VideoProfile = "compatible" | "highest" | "prores";
 export type JobStatus = "queued" | "downloading" | "completed" | "failed" | "cancelled";
 
 export interface SystemCheck {

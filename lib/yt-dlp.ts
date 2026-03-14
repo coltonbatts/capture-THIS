@@ -50,12 +50,16 @@ function qualityLabel(height: number) {
 function summarizeFormat(format: YtDlpFormat): MediaFormatSummary | null {
   const id = format.format_id;
 
-  if (!id) {
+  if (!id || format.ext === "mhtml" || format.format_note?.includes("storyboard")) {
     return null;
   }
 
   const hasVideo = Boolean(format.vcodec && format.vcodec !== "none");
   const hasAudio = Boolean(format.acodec && format.acodec !== "none");
+
+  if (!hasVideo && !hasAudio) {
+    return null;
+  }
 
   let type: DownloadMode = "video-audio";
   if (hasVideo && !hasAudio) {
@@ -109,10 +113,13 @@ function formatDuration(totalSeconds: number | null | undefined) {
   return `${seconds}s`;
 }
 
+const DEBUG = process.env.CAPTURETHIS_DEBUG === "1" || process.env.CAPTURETHIS_PROFILE === "1";
+
 export async function getMetadata(url: string): Promise<MetadataResponse> {
   assertSystemReady();
 
   const normalizedUrl = normalizeUrl(url);
+  const metaStart = Date.now();
   let stdout;
   try {
     const process = await execFileAsync(
@@ -147,6 +154,11 @@ export async function getMetadata(url: string): Promise<MetadataResponse> {
   const qualities = Array.from(qualitySet).sort((left, right) => {
     return Number.parseInt(right, 10) - Number.parseInt(left, 10);
   });
+
+  if (DEBUG) {
+    console.log(`[CaptureThis metadata] ${Date.now() - metaStart}ms for ${normalizedUrl.slice(0, 50)}`);
+    console.log(`[CaptureThis metadata] Qualities: ${qualities.join(", ")}`);
+  }
 
   return {
     url: normalizedUrl,
@@ -214,6 +226,9 @@ function resolveContainerProfile(
   videoProfile: VideoProfile,
 ): VideoProfile {
   if (outputContainer === "mov") {
+    if (videoProfile === "prores") {
+      return "prores";
+    }
     return "compatible";
   }
 
@@ -290,6 +305,13 @@ export function buildYtDlpArguments(request: DownloadRequest) {
       selector,
       "--merge-output-format",
       request.outputContainer,
+    );
+  }
+
+  if (resolvedProfile === "prores") {
+    args.push(
+      "--postprocessor-args",
+      "Video:-c:v prores_ks -profile:v 3 -vendor apl0 -bits_per_mb 8000 -pix_fmt yuv422p10le",
     );
   }
 

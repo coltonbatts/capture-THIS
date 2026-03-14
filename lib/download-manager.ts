@@ -67,6 +67,18 @@ function resolveCompletedFilePath(job: DownloadJob) {
   }
 }
 
+/** Throttle progress SSE emit (ms). Keeps UI responsive without blocking pipe read. */
+const PROGRESS_EMIT_INTERVAL_MS = 300;
+
+const DEBUG = process.env.CAPTURETHIS_DEBUG === "1" || process.env.CAPTURETHIS_PROFILE === "1";
+
+function debugLog(jobId: string, phase: string, detail?: Record<string, unknown>) {
+  if (!DEBUG) return;
+  const ts = Date.now();
+  const msg = detail ? `${phase} ${JSON.stringify(detail)}` : phase;
+  console.log(`[CaptureThis ${jobId.slice(0, 8)}] ${new Date(ts).toISOString()} ${msg}`);
+}
+
 class DownloadManager {
   private jobs: Map<string, DownloadJob>;
   private queue: string[] = [];
@@ -74,6 +86,8 @@ class DownloadManager {
   private activeJobId: string | null = null;
   private processing = false;
   private activeProcesses = new Map<string, ChildProcess>();
+  private progressEmitTimers = new Map<string, NodeJS.Timeout>();
+  private lastEmittedProgress = new Map<string, number>();
 
   constructor() {
     ensureDownloadDirectory();
@@ -84,6 +98,10 @@ class DownloadManager {
       if (job.status === "queued") {
         this.queue.push(job.id);
       }
+    }
+
+    if (this.queue.length > 0) {
+      void this.processQueue();
     }
   }
 
@@ -192,6 +210,7 @@ class DownloadManager {
 
     // If actively downloading, kill the child process
     if (job.status === "downloading") {
+      this.clearProgressThrottles(jobId);
       const child = this.activeProcesses.get(jobId);
 
       if (child && !child.killed) {
@@ -231,6 +250,52 @@ class DownloadManager {
     this.emit("job-updated");
   }
 
+  /**
+   * Updates only progress fields. No persist during download — sync disk I/O
+   * blocks the event loop, which blocks reading from yt-dlp's stdout pipe,
+   * which blocks yt-dlp. Persist only on status change (completion/fail/cancel).
+   */
+  private updateJobProgress(jobId: string, progress: Partial<DownloadJob["progress"]>) {
+    const current = this.jobs.get(jobId);
+    if (!current) return;
+
+    this.jobs.set(jobId, {
+      ...current,
+      progress: { ...current.progress, ...progress },
+      updatedAt: new Date().toISOString(),
+    });
+
+    const now = Date.now();
+
+    // Throttle emit: push to SSE at most every PROGRESS_EMIT_INTERVAL_MS
+    const lastEmit = this.lastEmittedProgress.get(jobId) ?? 0;
+    if (now - lastEmit >= PROGRESS_EMIT_INTERVAL_MS) {
+      this.lastEmittedProgress.set(jobId, now);
+      this.emit("job-updated");
+    } else {
+      const existingEmit = this.progressEmitTimers.get(jobId);
+      if (!existingEmit) {
+        this.progressEmitTimers.set(
+          jobId,
+          setTimeout(() => {
+            this.progressEmitTimers.delete(jobId);
+            this.lastEmittedProgress.set(jobId, Date.now());
+            this.emit("job-updated");
+          }, PROGRESS_EMIT_INTERVAL_MS - (now - lastEmit)),
+        );
+      }
+    }
+  }
+
+  private clearProgressThrottles(jobId: string) {
+    const emitTimer = this.progressEmitTimers.get(jobId);
+    if (emitTimer) {
+      clearTimeout(emitTimer);
+      this.progressEmitTimers.delete(jobId);
+    }
+    this.lastEmittedProgress.delete(jobId);
+  }
+
   private async processQueue() {
     if (this.processing) {
       return;
@@ -267,6 +332,9 @@ class DownloadManager {
       return;
     }
 
+    const runStart = Date.now();
+    debugLog(jobId, "run_start", { url: current.url.slice(0, 50) });
+
     this.updateJob(jobId, {
       status: "downloading",
       error: null,
@@ -298,6 +366,7 @@ class DownloadManager {
       this.activeProcesses.set(jobId, child);
 
       let remainder = "";
+      let firstProgressAt: number | null = null;
 
       const flushLine = (line: string) => {
         if (!line) {
@@ -305,21 +374,25 @@ class DownloadManager {
         }
 
         if (line.startsWith("PROGRESS::")) {
+          if (firstProgressAt === null) {
+            firstProgressAt = Date.now();
+            debugLog(jobId, "first_byte", {
+              ms_since_start: firstProgressAt - runStart,
+            });
+          }
           const [, downloaded, total, estimated, percent, speed, eta] = line.split("::");
           const totalValue = cleanField(total) ?? cleanField(estimated);
           const percentLabel = cleanField(percent) ?? "0.0%";
           const percentValue =
             Number.parseFloat(percentLabel.replace("%", "")) || 0;
 
-          this.updateJob(jobId, {
-            progress: {
-              percent: percentValue,
-              percentLabel,
-              speed: cleanField(speed),
-              eta: cleanField(eta),
-              downloaded: cleanField(downloaded),
-              total: totalValue,
-            },
+          this.updateJobProgress(jobId, {
+            percent: percentValue,
+            percentLabel,
+            speed: cleanField(speed),
+            eta: cleanField(eta),
+            downloaded: cleanField(downloaded),
+            total: totalValue,
           });
           return;
         }
@@ -327,12 +400,18 @@ class DownloadManager {
         if (line.includes("Destination:")) {
           const filePath = line.split("Destination:")[1]?.trim();
           if (filePath) {
+            debugLog(jobId, "destination", {
+              ms_since_start: Date.now() - runStart,
+            });
             this.updateJob(jobId, { filePath });
           }
           return;
         }
 
         if (line.includes("Merging formats into")) {
+          debugLog(jobId, "merge_start", {
+            ms_since_start: Date.now() - runStart,
+          });
           const filePath = line
             .split("Merging formats into")[1]
             ?.trim()
@@ -361,6 +440,7 @@ class DownloadManager {
 
       child.on("error", (error) => {
         this.activeProcesses.delete(jobId);
+        this.clearProgressThrottles(jobId);
 
         // Don't overwrite a cancellation
         const currentJob = this.jobs.get(jobId);
@@ -378,6 +458,7 @@ class DownloadManager {
 
       child.on("close", (code) => {
         this.activeProcesses.delete(jobId);
+        this.clearProgressThrottles(jobId);
 
         if (remainder) {
           flushLine(remainder.trim());
@@ -391,6 +472,11 @@ class DownloadManager {
         }
 
         if (code === 0) {
+          const elapsed = Date.now() - runStart;
+          debugLog(jobId, "completed", {
+            ms_total: elapsed,
+            status: "success",
+          });
           const job = this.jobs.get(jobId);
           const completedFilePath = job ? resolveCompletedFilePath(job) : null;
 
@@ -414,6 +500,11 @@ class DownloadManager {
             },
           });
         } else {
+          debugLog(jobId, "completed", {
+            ms_total: Date.now() - runStart,
+            status: "failed",
+            code,
+          });
           this.updateJob(jobId, {
             status: "failed",
             error: `yt-dlp exited with code ${code ?? "unknown"}.`,
